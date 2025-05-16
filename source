@@ -1,0 +1,255 @@
+from tkinter import *
+import tkinter as tk
+from googleapiclient.discovery import build
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+# Replace with your actual API key
+API_KEY = "AIzaSyD0X5NyqaHpblXjHUa7A100OdE9_OKllr8"
+
+# Global variables to store video data
+video_views = []
+video_titles = []
+
+def get_channel_stats(channel_name):
+    youtube = build("youtube", "v3", developerKey=API_KEY)
+
+    # Search for the channel using its name
+    search_response = youtube.search().list(
+        q=channel_name,
+        type="channel",
+        part="snippet",
+        maxResults=1
+    ).execute()
+
+    if not search_response["items"]:
+        print("Channel not found!")
+        return None, None, None
+
+    channel_id = search_response["items"][0]["id"]["channelId"]
+    channel_name = search_response["items"][0]["snippet"]["title"]
+
+    # Fetch channel statistics
+    channel_response = youtube.channels().list(
+        id=channel_id,
+        part="statistics"
+    ).execute()
+
+    if not channel_response["items"]:
+        print("Could not fetch channel details.")
+        return None, None, None
+
+    stats = channel_response["items"][0]["statistics"]
+    
+    return channel_id, channel_name, stats
+
+def get_video_ids(channel_id, max_results=5):
+    youtube = build("youtube", "v3", developerKey=API_KEY)
+
+    video_response = youtube.search().list(
+        channelId=channel_id,
+        part="id,snippet",
+        order="date",
+        maxResults=max_results,
+        type="video"
+    ).execute()
+ 
+    videos = []
+    for video in video_response["items"]:
+        videos.append({
+            "id": video["id"]["videoId"],
+            "title": video["snippet"]["title"]
+        })
+    
+    return videos
+
+def get_video_stats(videos):
+    youtube = build("youtube", "v3", developerKey=API_KEY)
+    video_ids = [video["id"] for video in videos]
+
+    video_response = youtube.videos().list(
+        id=",".join(video_ids),
+        part="statistics"
+    ).execute()
+
+    global video_views, video_titles
+    video_views = []
+    video_titles = []
+    
+    video_stats = []
+    for i, video in enumerate(video_response["items"]):
+        stats = video["statistics"]
+        video_id = video["id"]
+        
+        # Find the corresponding title
+        title = next((v["title"] for v in videos if v["id"] == video_id), f"Video {i+1}")
+        
+        views = int(stats.get("viewCount", 0))
+        likes = int(stats.get("likeCount", 0))
+        comments = int(stats.get("commentCount", 0))
+        
+        # Store views and title
+        video_views.append(views)
+        # Create a shortened version of the title
+        short_title = title[:15] + "..." if len(title) > 15 else title
+        video_titles.append(short_title)
+        
+        video_stats.append({
+            "video_id": video_id,
+            "title": title,
+            "views": views,
+            "likes": likes,
+            "comments": comments
+        })
+        
+    return video_stats
+
+def calculate_engagement(video_stats):
+    total_views = sum(video["views"] for video in video_stats)
+    total_likes = sum(video["likes"] for video in video_stats)
+    total_comments = sum(video["comments"] for video in video_stats)
+
+    if total_views == 0:
+        return 0  
+
+    engagement_rate = ((total_likes + total_comments) / total_views) * 100
+    return round(engagement_rate, 2)
+
+def format_number(num):
+    """Format large numbers to K (thousands) or M (millions)"""
+    if num >= 1000000:
+        return f"{num/1000000:.1f}M"
+    elif num >= 1000:
+        return f"{num/1000:.1f}K"
+    else:
+        return str(num)
+
+def create_views_graph():
+    # Create a new window for the graph
+    graph_window = Toplevel(root)
+    graph_window.title("Video Views Graph")
+    graph_window.geometry("700x500")
+    
+    figure = Figure(figsize=(7, 5), dpi=100)
+    plot = figure.add_subplot(1, 1, 1)
+    
+    # Use the stored video views
+    y = video_views
+    x = range(1, len(y) + 1)
+    
+    # Create the bar chart
+    bars = plot.bar(x, y, color="blue")
+    
+    # Add value labels above each bar with proper formatting
+    for bar, value in zip(bars, y):
+        height = bar.get_height()
+        plot.text(bar.get_x() + bar.get_width()/2., height,
+                 format_number(value),
+                 ha='center', va='bottom', rotation=0)
+    
+    # Format the y-axis to display numbers in K and M format
+    def y_fmt(x, pos):
+        return format_number(x)
+    
+    from matplotlib.ticker import FuncFormatter
+    plot.yaxis.set_major_formatter(FuncFormatter(y_fmt))
+    
+    # Set up the chart labels
+    plot.set_ylabel("Views")
+    plot.set_title("Views for Last 5 Videos")
+    plot.set_xticks(x)
+    plot.set_xticklabels(video_titles, rotation=20, ha='right')
+    
+    # Add grid lines for better readability
+    plot.grid(axis='y', linestyle='--', alpha=0.7)
+    
+    # Adjust layout to ensure everything fits
+    figure.tight_layout()
+    
+    # Display the figure
+    canvas = FigureCanvasTkAgg(figure, graph_window)
+    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    canvas.draw()
+    
+    # Add a details section below the graph
+    details_frame = Frame(graph_window)
+    details_frame.pack(fill=tk.X, pady=10)
+    
+    details_text = Text(details_frame, height=6, width=80)
+    details_text.pack(padx=10)
+    
+    # Add detailed view information
+    details_text.insert(END, "Detailed Video Views:\n\n")
+    for i, (title, views) in enumerate(zip(video_titles, video_views)):
+        full_title = next((v["title"] for v in video_stats if v["views"] == views), title)
+        details_text.insert(END, f"Video {i+1}: {full_title}\n")
+        details_text.insert(END, f"Views: {views:,}\n\n")
+    
+    details_text.config(state=DISABLED)  # Make it read-only
+
+def on_search():
+    global video_stats
+    channel_name = textBox.get("1.0", "end-1c").strip()
+    if not channel_name:
+        return
+
+    # Clear previous messages
+    for widget in root.winfo_children():
+        if isinstance(widget, Message) or isinstance(widget, Button) and widget != buttonCommit:
+            widget.destroy()
+
+    channel_id, channel_name, stats = get_channel_stats(channel_name)
+    if not channel_id:
+        messageVar = Message(root, text="Channel not found!", width=400)
+        messageVar.config(bg='white')
+        messageVar.pack()
+        return
+
+    videos = get_video_ids(channel_id)
+    if not videos:
+        messageVar = Message(root, text="No videos found!", width=400)
+        messageVar.config(bg='white')
+        messageVar.pack()
+        return
+
+    video_stats = get_video_stats(videos)
+    if not video_stats:
+        messageVar = Message(root, text="Could not fetch video statistics.", width=400)
+        messageVar.config(bg='white')
+        messageVar.pack()
+        return
+
+    engagement_rate = calculate_engagement(video_stats)
+    
+    stats_message = (
+        f"📊 Channel Statistics 📊\n"
+        f"Channel Name: {channel_name}\n"
+        f"Subscribers: {int(stats.get('subscriberCount', 0)):,}\n"
+        f"Total Views: {int(stats.get('viewCount', 0)):,}\n"
+        f"Total Videos: {int(stats.get('videoCount', 0)):,}\n\n"
+        f"🎥 Video Engagement Statistics 🎥\n"
+        f"Engagement Rate: {engagement_rate}%"
+    )
+
+    messageVar = Message(root, text=stats_message, width=400)
+    messageVar.config(bg='white')
+    messageVar.pack()
+    
+    # Add a button to show the graph
+    graph_button = Button(root, text="Show Views Graph", command=create_views_graph)
+    graph_button.pack(pady=10)
+
+# Tkinter UI Setup
+root = Tk()
+root.title("YouTube Channel Stats")
+root.geometry("500x400")
+
+textBox = Text(root, height=2, width=30)
+textBox.pack(pady=10)
+
+buttonCommit = Button(root, height=1, width=10, text="Search", command=on_search)
+buttonCommit.pack(pady=5)
+
+root.mainloop()
